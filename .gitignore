@@ -219,4 +219,4 @@ __marimo__/
 
 #added
 *.pyc
-cache/*.json
+cache/
