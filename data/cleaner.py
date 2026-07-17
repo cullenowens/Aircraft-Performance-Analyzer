@@ -21,6 +21,10 @@ def clean(records: list[dict]) -> pd.DataFrame:
     df = pd.DataFrame(records)
     #drop rows missing fields that are necessary
     df = df.dropna(subset=REQUIRED_FIELDS)
+    #converting opensky's m/s to f/m (converted to knots in poller)
+    df["baro_altitude"] = df["baro_altitude"] * 3.28084
+    df["velocity"]      = df["velocity"]      * 1.94384
+    df["vertical_rate"] = df["vertical_rate"] * 196.85
     # missing will be treated as airborne
     if "on_ground" in df.columns:
         df = df[df["on_ground"] == False]

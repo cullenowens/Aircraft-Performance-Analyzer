@@ -35,7 +35,7 @@ CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "cache")
 # Default poll interval in seconds. 10s gives good density (~360
 # points/hour) while staying well within the 4,000 daily credit limit
 # even for long flights. Each poll = 1 API call.
-DEFAULT_INTERVAL = 10
+DEFAULT_INTERVAL = 20
 
 
 def poll_flight(
@@ -126,7 +126,7 @@ def poll_flight(
                         hint = "unknown"
                     elif vs_fpm < 100 and spd_kts > 0 and spd_kts < 200:
                         hint = "→ takeoff"
-                    elif vs_fpm > 200:
+                    elif vs_fpm > 100:
                         hint = "↑ climbing"
                     elif vs_fpm < -200:
                         hint = "↓ descending"
