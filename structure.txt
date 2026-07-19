@@ -1,5 +1,6 @@
 aircraft_analyzer/
 ├── data/
+│   ├── poller.py         # tracks live time flights
 │   ├── fetcher.py        # OpenSky + NOAA API calls
 │   ├── cleaner.py        # Pandas smoothing and resampling
 │   └── phase_detector.py # Flight phase labeling
