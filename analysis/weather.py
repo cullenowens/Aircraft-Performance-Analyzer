@@ -447,3 +447,9 @@ RIC 2510 2615+13 2718+09 2820+04 2935-07 3040-18 304533 295243 286054
     print(f"  RIC interpolated at 10,500 ft: {interp}")
     hw, cw = _wind_components(interp["wind_dir"], interp["wind_spd"], 200)
     print(f"  Headwind: {hw:.1f} kts  Crosswind: {cw:.1f} kts (track 200°)")
+
+    #TODO
+    # Be able to pull weather data while the plane passes through the airspace, not just at the start and end of the flight
+    # This would require a more dynamic approach to fetching and applying weather data, potentially using real-time APIs or more frequent polling of weather conditions along the flight path.
+    # Would also mean we would have to pass data to a database as it's ingested to process in real-time
+    # Test output and check for accuracy and if it fits desire

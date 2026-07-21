@@ -297,3 +297,6 @@ if __name__ == "__main__":
         climb_interval=args.climb_interval,
         cruise_interval=args.cruise_interval,
     )
+
+    #TODO
+    # Continue checking ingestion of data, need to add context for 
