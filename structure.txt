@@ -5,7 +5,7 @@ aircraft_analyzer/
 │   ├── cleaner.py        # Pandas smoothing and resampling
 │   └── phase_detector.py # Flight phase labeling
 ├── analysis/
-│   ├── atmosphere.py     # ISA model, density alt, TAS
+│   ├── weather.py     # ISA model, density alt, TAS
 │   ├── performance.py    # Climb rate, L/D, fuel estimates
 │   └── poh_compare.py   # Benchmark against POH tables
 ├── viz/

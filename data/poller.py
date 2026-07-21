@@ -22,7 +22,7 @@ compatible with the same field mapping used everywhere else in the pipeline.
 import argparse
 import json
 import os
-import time
+import time as time_module
 from datetime import datetime, timezone
 
 import requests
@@ -37,6 +37,9 @@ CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "cache")
 # rapidly, sparse during cruise where altitude and speed are stable.
 CLIMB_INTERVAL  = 10   # takeoff, climb, descent, landing
 CRUISE_INTERVAL = 30   # cruise only
+
+#used for early toekn refresh -- every 25 min < 30 min expiry
+TOKEN_REFRESH_INTERVAL = 25 * 60  # 25 minutes
 
 
 def check_credits(icao24: str) -> int | None:
@@ -87,6 +90,7 @@ def poll_flight(
     icao24 = icao24.lower().strip()
     records = []
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    last_token_refresh = time_module.time()
 
     # Check credit balance before starting — each serial-only /states/all
     # call costs 1 credit, so we can estimate how long we can poll.
@@ -123,12 +127,26 @@ def poll_flight(
 
     try:
         while True:
-            response = requests.get(
-                f"{OPENSKY_BASE_URL}/states/all",
-                params={"icao24": icao24},
-                headers=tokens.headers(),
-                timeout=10,
-            )
+            try:
+                if time_module.time() - last_token_refresh > TOKEN_REFRESH_INTERVAL:
+                    tokens.headers(force_refresh=True)
+                    last_token_refresh = time_module.time()
+                response = requests.get(
+                    f"{OPENSKY_BASE_URL}/states/all",
+                    params={"icao24": icao24},
+                    headers=tokens.headers(),
+                    timeout=10,
+                )
+            except requests.exceptions.ConnectionError as e:
+                now_str = datetime.now(tz=timezone.utc).strftime("%H:%M:%S")
+                print(f"{now_str:<12} [connection error — retrying next interval] {e}")
+                time_module.sleep(sleep_secs)
+                continue
+            except requests.exceptions.Timeout:
+                now_str = datetime.now(tz=timezone.utc).strftime("%H:%M:%S")
+                print(f"{now_str:<12} [timeout — retrying next interval]")
+                time_module.sleep(sleep_secs)
+                continue
 
             # Handle token expiry
             if response.status_code == 401:
@@ -219,7 +237,7 @@ def poll_flight(
                 print(f"  [HTTP {response.status_code}] retrying next interval...")
                 sleep_secs = climb_interval
 
-            time.sleep(sleep_secs)
+            time_module.sleep(sleep_secs)
 
     except KeyboardInterrupt:
         print(f"\n\nStopped at {datetime.now(tz=timezone.utc).strftime('%H:%M:%S UTC')}")

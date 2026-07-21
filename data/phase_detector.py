@@ -19,7 +19,7 @@ DESCENT_VS_THRESHOLD = -200   # fpm
 
 # Altitude below which a descent is reclassified as landing approach.
 # 2500 ft AGL is roughly the outer marker altitude for a typical ILS.
-LANDING_ALT_THRESHOLD = 2500  # feet
+LANDING_ALT_THRESHOLD = 1000  # feet
 
 # Rolling window size in rows for smoothing vertical_rate.
 # At 1 Hz ADS-B data this is ~30 seconds — long enough to smooth out
@@ -72,12 +72,14 @@ def label_phases(df: pd.DataFrame) -> pd.DataFrame:
     conditions = [
         # Landing: descending AND low altitude
         (df["smoothed_vs"] < DESCENT_VS_THRESHOLD) & (df["baro_altitude"] < LANDING_ALT_THRESHOLD),
+        # Takeoff : ascending AND low altitude
+        (df["smoothed_vs"] > CLIMB_VS_THRESHOLD) & (df["baro_altitude"] < LANDING_ALT_THRESHOLD),
         # Climb: sustained positive vertical rate
         df["smoothed_vs"] > CLIMB_VS_THRESHOLD,
         # Descent: sustained negative vertical rate (above landing threshold)
         df["smoothed_vs"] < DESCENT_VS_THRESHOLD,
     ]
-    choices = ["landing", "climb", "descent"]
+    choices = ["landing", "takeoff", "climb", "descent"]
 
     # Default (when none of the above match) is cruise.
     df["phase"] = np.select(conditions, choices, default="cruise")
@@ -104,11 +106,16 @@ def phase_summary(df: pd.DataFrame) -> pd.DataFrame:
     """
     if "phase" not in df.columns:
         raise ValueError("DataFrame must have a 'phase' column. Run label_phases() first.")
+    
+    if "time_position" not in df.columns:
+        raise ValueError("DataFrame must have a 'time_position' column for duration calculation.")
 
     summary = (
         df.groupby("phase")
         .agg(
-            row_count=("phase", "count"),
+            # Timestamp diff gives real elapsed seconds regardless of
+            # how frequently the poller was sampling during that phase
+            duration_seconds=("time_position", lambda x: int(x.max() - x.min())),
             avg_altitude_ft=("baro_altitude", "mean"),
             avg_speed_kts=("velocity", "mean"),
         )
@@ -116,8 +123,13 @@ def phase_summary(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
     )
 
-    # row_count ≈ seconds at 1 Hz, so rename it for clarity
-    summary = summary.rename(columns={"row_count": "duration_seconds"})
+    summary["duration_min"] = (summary["duration_seconds"] / 60).round(1)
+ 
+    # Reorder columns for readability
+    summary = summary[[
+        "phase", "duration_seconds", "duration_min",
+        "avg_altitude_ft", "avg_speed_kts"
+    ]]
 
     return summary
 
