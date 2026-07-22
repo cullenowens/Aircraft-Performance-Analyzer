@@ -27,6 +27,7 @@ FD format reference:
 
 import math
 import re
+from datetime import datetime, timezone
 from functools import lru_cache
 
 import numpy as np
@@ -132,26 +133,24 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return R * 2 * math.asin(math.sqrt(a))
 
 
-def _nearest_station(lat: float, lon: float, available_ids: list[str]) -> str | None:
+def _nearest_station(
+    lat: float, lon: float, available_ids: list[str], coords: dict[str, tuple[float, float]]
+) -> str | None:
     """
     Return the station ID from available_ids that is geographically
     nearest to (lat, lon), using haversine distance for accuracy.
-
-    Queries NOAA stationinfo for coordinates of the stations in available_ids.
 
     Parameters
     ----------
     lat           : float   Aircraft latitude
     lon           : float   Aircraft longitude
     available_ids : list    Station IDs present in the current FD response
+    coords        : dict    { station_id -> (lat, lon) }, pre-fetched by the caller
     """
-    # Fetch coordinates for this specific set of stations (queries NOAA with K-prefixed IDs)
-    all_coords = _fetch_station_coords_for_ids(available_ids)
-
     # Only consider stations that successfully got coordinates
     candidates = {
-        sid: coords
-        for sid, coords in all_coords.items()
+        sid: c
+        for sid, c in coords.items()
         if sid in available_ids
     }
 
@@ -348,6 +347,7 @@ def enrich(df: pd.DataFrame, region: str = "us") -> pd.DataFrame:
     headwind_kts  : headwind component (+= headwind, -= tailwind)
     crosswind_kts : crosswind component (knots)
     wx_station    : which NOAA station was used for each row (useful for debugging)
+    wx_time       : row's time_position formatted as "HH:MM:SS UTC"
 
     Parameters
     ----------
@@ -388,10 +388,20 @@ def enrich(df: pd.DataFrame, region: str = "us") -> pd.DataFrame:
     # Per-row enrichment — nearest station selected at each row's actual
     # lat/lon position so cross-country flights get geographically
     # appropriate weather data throughout the route
-    oat_list, wdir_list, wspd_list, hw_list, cw_list, stn_list = [], [], [], [], [], []
+    oat_list, wdir_list, wspd_list, hw_list, cw_list, stn_list, time_list = [], [], [], [], [], [], []
 
-    for _, row in df.iterrows():
-        nearest = _nearest_station(row["latitude"], row["longitude"], available_ids)
+    # Station coordinates are static for a given available_ids set, so we only
+    # need to hit NOAA's stationinfo endpoint periodically rather than once per
+    # row. Every STATION_COORD_REFRESH_ROWS rows we refresh the cache; rows in
+    # between reuse the last fetched coordinates.
+    STATION_COORD_REFRESH_ROWS = 10
+    coord_cache = None
+
+    for i, (_, row) in enumerate(df.iterrows()):
+        if coord_cache is None or i % STATION_COORD_REFRESH_ROWS == 0:
+            coord_cache = _fetch_station_coords_for_ids(available_ids)
+
+        nearest = _nearest_station(row["latitude"], row["longitude"], available_ids, coord_cache)
         stn_list.append(nearest)
         station_data = all_stations.get(nearest, {})
 
@@ -404,12 +414,19 @@ def enrich(df: pd.DataFrame, region: str = "us") -> pd.DataFrame:
         hw_list.append(hw)
         cw_list.append(cw)
 
+        row_time = row.get("time_position")
+        time_list.append(
+            datetime.fromtimestamp(row_time, tz=timezone.utc).strftime("%H:%M:%S UTC")
+            if pd.notna(row_time) else None
+        )
+
     df["oat_c"]         = oat_list
     df["wind_dir"]      = wdir_list
     df["wind_spd_kts"]  = wspd_list
     df["headwind_kts"]  = hw_list
     df["crosswind_kts"] = cw_list
     df["wx_station"]    = stn_list
+    df["wx_time"]       = time_list
 
     return df
 
@@ -429,7 +446,8 @@ if __name__ == "__main__":
     print("\nTesting nearest station (DCA→ATL midpoint at 37°N, 79°W)...")
     # Simulate stations available in a typical ATL→JFK FD response
     sample_ids = ["ATL", "JFK", "RIC", "RDU", "GSP", "BOS", "ORD", "CLT", "ORF"]
-    nearest = _nearest_station(37.0, -79.0, sample_ids)
+    sample_coords = _fetch_station_coords_for_ids(sample_ids)
+    nearest = _nearest_station(37.0, -79.0, sample_ids, sample_coords)
     print(f"  Selected: {nearest}  (expected: RIC or RDU)")
 
     print("\nTesting FD parser with sample data...")
