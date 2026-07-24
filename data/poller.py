@@ -1,54 +1,64 @@
 """
 poller.py
-Collects live ADS-B state vectors from OpenSky for a specific aircraft
-while a flight is happening, and saves them to a local JSON file.
+Collects live ADS-B state vectors from OpenSky for a specific aircraft,
+attaches weather at the moment each point is captured, and writes
+directly to the SQLite database (see db.py) — no more JSON files.
+
+Auto-stop on landing
+---------------------
+The poller tracks which flight phases it has observed (via a lightweight
+live heuristic, not the smoothed batch phase_detector) and automatically
+stops once it has seen a full flight profile — takeoff, climb, cruise,
+descent, landing — followed by two consecutive on_ground readings.
+
+This is a heuristic, not a guarantee: coverage gaps near the ground can
+occasionally prevent the "landing" phase from ever being observed. A
+safety-net fallback stops polling anyway after several consecutive
+on_ground readings regardless of phase history, so the poller can't
+hang forever. Ctrl+C always works too.
 
 Usage
 -----
-Start this before or shortly after the flight departs. Stop it with
-Ctrl+C after the aircraft lands. The saved file is then fed into
-the analysis pipeline via fetcher.load_polled_track().
-
   .venv/bin/python3 -m data.poller --icao24 ada6ed
-
-Or with a custom output path and poll interval:
-
-  .venv/bin/python3 -m data.poller --icao24 ada6ed --interval 15 --output cache/my_flight.json
-
-The output file format matches OpenSky's /states/all response so it's
-compatible with the same field mapping used everywhere else in the pipeline.
+  .venv/bin/python3 -m data.poller --icao24 ada6ed --callsign AAL1002 --dep KATL --arr KJFK
 """
 
 import argparse
-import json
-import os
-import time as time_module
+import time
 from datetime import datetime, timezone
 
 import requests
 
 from auth import tokens
+from data.db import (
+    get_connection, init_db, create_flight, insert_state_vector,
+    mark_flight_landed,
+)
+from analysis.weather import build_weather_cache, get_weather_for_point
 
 OPENSKY_BASE_URL = "https://opensky-network.org/api"
-CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "cache")
 
-# Poll intervals in seconds by flight phase.
-# Dense during transitions (takeoff/climb/descent) where data changes
-# rapidly, sparse during cruise where altitude and speed are stable.
-CLIMB_INTERVAL  = 10   # takeoff, climb, descent, landing
-CRUISE_INTERVAL = 30   # cruise only
+# Poll intervals in seconds by flight phase — dense during transitions,
+# sparse during stable cruise to conserve API credits.
+CLIMB_INTERVAL  = 10
+CRUISE_INTERVAL = 30
 
-#used for early toekn refresh -- every 25 min < 30 min expiry
-TOKEN_REFRESH_INTERVAL = 25 * 60  # 25 minutes
+# Safety-net fallback: if this many consecutive on_ground polls happen,
+# stop regardless of whether the full phase history was observed. This
+# protects against ADS-B coverage gaps near the ground preventing the
+# primary landing condition from ever being satisfied.
+GROUND_SAFETY_LIMIT = 6
+
+# Full set of live phase hints that must all be observed at least once
+# before landing can be auto-confirmed by the primary condition.
+REQUIRED_PHASES_FOR_LANDING = {"takeoff", "climb", "cruise", "descent", "landing"}
 
 
 def check_credits(icao24: str) -> int | None:
     """
     Make a single test request to check how many /states/* credits
-    remain before starting a poll session.
-
-    Returns the remaining credit count, or None if the header isn't
-    present (e.g. anonymous requests don't include it).
+    remain before starting a poll session. Returns None if the header
+    isn't present, 0 if already rate limited.
     """
     response = requests.get(
         f"{OPENSKY_BASE_URL}/states/all",
@@ -57,80 +67,95 @@ def check_credits(icao24: str) -> int | None:
         timeout=10,
     )
     remaining = response.headers.get("X-Rate-Limit-Remaining")
-    retry_after = response.headers.get("X-Rate-Limit-Retry-After-Seconds")
 
     if response.status_code == 429:
-        secs  = int(retry_after or 0)
-        hours = secs // 3600
-        mins  = (secs % 3600) // 60
+        secs  = int(response.headers.get("X-Rate-Limit-Retry-After-Seconds", 0))
+        hours, mins = secs // 3600, (secs % 3600) // 60
         print(f"[credits] Already rate limited — resets in {hours}h {mins}m.")
         return 0
 
     return int(remaining) if remaining is not None else None
 
 
-def poll_flight(
+def _live_phase_hint(on_ground: bool, alt_ft: float | None, vs_fpm: float | None, spd_kts: float | None) -> str:
+    """
+    Lightweight per-row phase classification used only for the live
+    status display and the landing-detection hook. Not a substitute
+    for phase_detector.label_phases(), which smooths over the full
+    trajectory after landing and is the source of truth for analysis.
+    """
+    if on_ground:
+        return "on_ground"
+    if alt_ft is None:
+        return "takeoff" if (spd_kts and spd_kts > 50) else "unknown"
+    # Landing check comes before the generic low-altitude takeoff check —
+    # both conditions can be true at low altitude, but a clearly negative
+    # vertical rate means descending toward touchdown, not climbing out.
+    if alt_ft < 2500 and vs_fpm is not None and vs_fpm < -200:
+        return "landing"
+    if alt_ft < 1000:
+        return "takeoff"
+    if vs_fpm is None:
+        return "cruise" if alt_ft > 10000 else "unknown"
+    if vs_fpm > 200:
+        return "climb"
+    if vs_fpm < -200:
+        return "descent"
+    return "cruise"
+
+
+def poll_and_store(
     icao24: str,
-    output_path: str,
+    conn,
+    callsign: str | None = None,
+    dep_airport: str | None = None,
+    arr_airport: str | None = None,
     climb_interval: int = CLIMB_INTERVAL,
     cruise_interval: int = CRUISE_INTERVAL,
-) -> list:
+) -> int:
     """
-    Poll OpenSky for a specific aircraft with dynamic interval adjustment:
-    polls frequently during climb/descent and less often during cruise
-    to save API credits without losing resolution where it matters.
+    Poll OpenSky for a specific aircraft, attach weather at each point,
+    and write directly to the database. Stops automatically once a full
+    flight profile has been observed and the aircraft is confirmed on
+    the ground (or via Ctrl+C / safety-net fallback).
 
-    Parameters
-    ----------
-    icao24          : str   ICAO24 hex of the aircraft to track
-    output_path     : str   File path to save collected state vectors
-    climb_interval  : int   Seconds between polls during climb/descent (default 10)
-    cruise_interval : int   Seconds between polls during cruise (default 30)
+    Returns
+    -------
+    int
+        The flight_id of the tracked flight, for use by the orchestrator.
     """
     icao24 = icao24.lower().strip()
-    records = []
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    last_token_refresh = time_module.time()
+    flight_id = create_flight(conn, icao24, callsign, dep_airport, arr_airport)
 
-    # Check credit balance before starting — each serial-only /states/all
-    # call costs 1 credit, so we can estimate how long we can poll.
     print(f"\nChecking API credit balance...")
     credits = check_credits(icao24)
-
     if credits == 0:
         print("Cannot start polling — no credits remaining. Try again after reset.")
-        return records
+        mark_flight_landed(conn, flight_id)
+        return flight_id
 
-    print(f"\nTracking aircraft: {icao24.upper()}")
+    print(f"\nTracking aircraft: {icao24.upper()}  (flight_id={flight_id})")
     print(f"Poll interval:     {climb_interval}s (climb/descent)  {cruise_interval}s (cruise)")
-    print(f"Saving to:         {output_path}")
     print(f"Started:           {datetime.now(tz=timezone.utc).strftime('%H:%M:%S UTC')}")
-
     if credits is not None:
-        credits_available = credits - 1
-        # Estimate using a blended rate: assume ~20% of flight is
-        # transitions and ~80% is cruise (conservative for a long flight)
-        blended_interval = (0.2 * climb_interval) + (0.8 * cruise_interval)
-        max_mins = int((credits_available * blended_interval) // 60)
-        hours    = max_mins // 60
-        mins     = max_mins % 60
-        print(f"Credits remaining: {credits_available:,}  "
-              f"(~{hours}h {mins}m estimated at blended rate)")
-        if credits_available < 200:
-            print(f"  ⚠ Low credits — consider increasing cruise interval")
-    else:
-        print(f"Credits remaining: unknown (header not returned)")
+        print(f"Credits remaining: {credits - 1:,}")
+    print(f"\nAuto-stops on confirmed landing. Press Ctrl+C to stop manually.\n")
+    print(f"{'Time (UTC)':<12} {'Alt (ft)':<10} {'Speed':<10} {'VS':<10} {'Phase':<12} {'Wind':<14} {'OAT':<8} {'Next'}")
+    print("-" * 92)
 
-    print(f"\nPress Ctrl+C when the flight lands to stop and save.\n")
-    print(f"{'Time (UTC)':<12} {'Alt (ft)':<12} {'Speed (kts)':<14} {'VS (fpm)':<12} {'Phase hint':<16} {'Credits left'}")
-    print("-" * 78)
+    weather_cache = build_weather_cache()
+    seen_phases: set[str] = set()
+    consecutive_ground = 0
+    row_count = 0
+    landed_confirmed = False
+    has_been_airborne = False
 
     try:
         while True:
+            if weather_cache.is_stale():
+                weather_cache = build_weather_cache()
+
             try:
-                if time_module.time() - last_token_refresh > TOKEN_REFRESH_INTERVAL:
-                    tokens.headers(force_refresh=True)
-                    last_token_refresh = time_module.time()
                 response = requests.get(
                     f"{OPENSKY_BASE_URL}/states/all",
                     params={"icao24": icao24},
@@ -139,16 +164,15 @@ def poll_flight(
                 )
             except requests.exceptions.ConnectionError as e:
                 now_str = datetime.now(tz=timezone.utc).strftime("%H:%M:%S")
-                print(f"{now_str:<12} [connection error — retrying next interval] {e}")
-                time_module.sleep(sleep_secs)
+                print(f"{now_str:<12} [connection error — retrying next interval]")
+                time.sleep(climb_interval)
                 continue
             except requests.exceptions.Timeout:
                 now_str = datetime.now(tz=timezone.utc).strftime("%H:%M:%S")
                 print(f"{now_str:<12} [timeout — retrying next interval]")
-                time_module.sleep(sleep_secs)
+                time.sleep(climb_interval)
                 continue
 
-            # Handle token expiry
             if response.status_code == 401:
                 response = requests.get(
                     f"{OPENSKY_BASE_URL}/states/all",
@@ -157,146 +181,137 @@ def poll_flight(
                     timeout=10,
                 )
 
-            # Handle rate limiting — save data and exit rather than
-            # sleeping for hours, which just freezes the terminal
             if response.status_code == 429:
-                secs  = int(response.headers.get("X-Rate-Limit-Retry-After-Seconds", 0))
-                hours = secs // 3600
-                mins  = (secs % 3600) // 60
-                print(f"\n[rate limited] Daily /states/* credits exhausted.")
-                print(f"Credits reset in approximately {hours}h {mins}m (at next UTC midnight).")
-                print(f"Tip: use --interval 30 to use fewer credits per flight.")
-                print(f"Saving {len(records)} collected vectors and exiting...")
+                secs = int(response.headers.get("X-Rate-Limit-Retry-After-Seconds", 0))
+                hours, mins = secs // 3600, (secs % 3600) // 60
+                print(f"\n[rate limited] Daily credits exhausted. Resets in ~{hours}h {mins}m.")
+                print(f"Saving {row_count} collected rows and exiting...")
                 break
 
-            if response.ok:
-                # Update running credit count from response header
-                remaining_hdr = response.headers.get("X-Rate-Limit-Remaining")
-                if remaining_hdr is not None:
-                    credits = int(remaining_hdr)
+            if not response.ok:
+                print(f"  [HTTP {response.status_code}] retrying next interval...")
+                time.sleep(climb_interval)
+                continue
 
-                data = response.json()
-                if data and data.get("states"):
-                    state = data["states"][0]
-                    records.append(state)
+            data = response.json()
+            sleep_secs = climb_interval  # default; overridden below when cruising
 
-                    # OpenSky returns altitude in meters, velocity in m/s —
-                    # convert to ft and knots for the status display.
-                    baro_alt_m  = state[7]   # baro_altitude (meters)
-                    on_ground   = state[8]   # on_ground (bool)
-                    velocity_ms = state[9]   # velocity (m/s)
-                    vert_rate   = state[11]  # vertical_rate (m/s)
+            if data and data.get("states"):
+                state = data["states"][0]
 
-                    # Use `is not None` so 0.0 values aren't treated as
-                    # missing — a VS of exactly 0 is valid cruise data
-                    alt_ft  = round(baro_alt_m  * 3.28084) if baro_alt_m  is not None else None
-                    spd_kts = round(velocity_ms * 1.94384) if velocity_ms is not None else None
-                    vs_fpm  = round(vert_rate   * 196.85)  if vert_rate   is not None else None
+                # Raw OpenSky units: altitude in meters, velocity in m/s
+                baro_alt_m  = state[7]
+                on_ground   = bool(state[8])
+                velocity_ms = state[9]
+                true_track  = state[10] or 0.0
+                vert_rate_ms = state[11]
+                lat, lon = state[6], state[5]
 
-                    # Phase hint uses altitude + speed context so takeoff
-                    # roll and cruise with null VS are handled correctly
-                    if on_ground:
-                        hint = "on ground" if spd_kts and spd_kts < 30 else "↑ takeoff" if spd_kts else "unknown"
-                    elif alt_ft is None:
-                        hint = "↑ takeoff" if (spd_kts and spd_kts > 50) else "unknown"
-                    elif alt_ft < 1000:
-                        hint = "↑ takeoff" if (vs_fpm and vs_fpm > 0) else "↓ landing" if (vs_fpm and vs_fpm < 0) else "unknown"
-                    elif vs_fpm is None:
-                        hint = "→ cruise" if alt_ft > 10000 else "unknown"
-                    elif vs_fpm > 200:
-                        hint = "↑ climbing"
-                    elif vs_fpm < -200:
-                        hint = "↓ descending"
-                    else:
-                        hint = "→ cruise"
+                # Convert to aviation units once, here, at write time —
+                # everything downstream (db, phase_detector, dashboard)
+                # works in feet/knots/fpm consistently from this point on
+                alt_ft  = round(baro_alt_m  * 3.28084) if baro_alt_m  is not None else None
+                spd_kts = round(velocity_ms * 1.94384) if velocity_ms is not None else None
+                vs_fpm  = round(vert_rate_ms * 196.85) if vert_rate_ms is not None else None
 
-                    now_str     = datetime.now(tz=timezone.utc).strftime("%H:%M:%S")
-                    alt_str     = f"{alt_ft} ft"   if alt_ft  is not None else "N/A"
-                    spd_str     = f"{spd_kts} kts" if spd_kts is not None else "N/A"
-                    vs_str      = f"{vs_fpm} fpm"  if vs_fpm  is not None else "N/A"
-                    credits_str = str(credits) if credits is not None else "?"
+                hint = _live_phase_hint(on_ground, alt_ft, vs_fpm, spd_kts)
+                if hint not in ("on_ground", "unknown"):
+                    seen_phases.add(hint)
+                consecutive_ground = consecutive_ground + 1 if on_ground else 0
+                if not on_ground:
+                    has_been_airborne = True
 
-                    # Dynamic interval: slow down during cruise to save credits
-                    sleep_secs = cruise_interval if hint == "→ cruise" or hint == "on ground" else climb_interval
+                # Weather lookup — pure computation against the cached
+                # NOAA tables, no network call on this hot path
+                wx = {"oat_c": None, "wind_dir": None, "wind_spd_kts": None,
+                      "headwind_kts": None, "crosswind_kts": None, "wx_station": None}
+                if lat is not None and lon is not None and alt_ft is not None:
+                    wx = get_weather_for_point(lat, lon, alt_ft, true_track, weather_cache)
 
-                    print(
-                        f"{now_str:<12} "
-                        f"{alt_str:<12} "
-                        f"{spd_str:<14} "
-                        f"{vs_str:<12} "
-                        f"{hint:<16} "
-                        f"{credits_str:<10} "
-                        f"[next: {sleep_secs}s]"
-                    )
-                else:
-                    now_str = datetime.now(tz=timezone.utc).strftime("%H:%M:%S")
-                    sleep_secs = climb_interval  # default to dense when no data
-                    print(f"{now_str:<12} [no data — coverage gap or flight ended]")
+                insert_state_vector(conn, flight_id, {
+                    "time_position": state[3],
+                    "latitude": lat,
+                    "longitude": lon,
+                    "baro_altitude": alt_ft,
+                    "velocity": spd_kts,
+                    "vertical_rate": vs_fpm,
+                    "true_track": true_track,
+                    "on_ground": on_ground,
+                    **wx,
+                })
+                row_count += 1
+
+                sleep_secs = cruise_interval if hint == "cruise" else climb_interval
+
+                now_str  = datetime.now(tz=timezone.utc).strftime("%H:%M:%S")
+                alt_str  = f"{alt_ft}ft" if alt_ft is not None else "N/A"
+                spd_str  = f"{spd_kts}kt" if spd_kts is not None else "N/A"
+                vs_str   = f"{vs_fpm}fpm" if vs_fpm is not None else "N/A"
+                wind_str = f"{wx['wind_spd_kts']:.0f}kt@{wx['wind_dir']:.0f}°" if wx.get("wind_spd_kts") is not None else "N/A"
+                oat_str  = f"{wx['oat_c']:.0f}C" if wx.get("oat_c") is not None else "N/A"
+                print(
+                    f"{now_str:<12} {alt_str:<10} {spd_str:<10} {vs_str:<10} "
+                    f"{hint:<12} {wind_str:<14} {oat_str:<8} [{sleep_secs}s]"
+                )
+
+                # Primary landing condition: full phase profile observed,
+                # then 2+ consecutive on_ground readings
+                if consecutive_ground >= 2 and REQUIRED_PHASES_FOR_LANDING.issubset(seen_phases):
+                    print(f"\n[landing] Full flight profile observed, aircraft on ground. Confirmed landed.")
+                    landed_confirmed = True
+                    break
+
+                # Safety-net fallback: on_ground for a while regardless
+                # of phase history (protects against coverage gaps).
+                # Gated on has_been_airborne so this can't fire while the
+                # aircraft is still sitting at the gate before departure —
+                # see the has_been_airborne comment near its initialization.
+                if consecutive_ground >= GROUND_SAFETY_LIMIT and has_been_airborne:
+                    missing = REQUIRED_PHASES_FOR_LANDING - seen_phases
+                    print(f"\n[landing] On ground for {consecutive_ground} consecutive polls "
+                          f"(safety fallback — missing phases: {missing or 'none'}). Stopping.")
+                    landed_confirmed = True
+                    break
 
             else:
-                print(f"  [HTTP {response.status_code}] retrying next interval...")
-                sleep_secs = climb_interval
+                now_str = datetime.now(tz=timezone.utc).strftime("%H:%M:%S")
+                print(f"{now_str:<12} [no data — coverage gap]")
 
-            time_module.sleep(sleep_secs)
+            time.sleep(sleep_secs)
 
     except KeyboardInterrupt:
-        print(f"\n\nStopped at {datetime.now(tz=timezone.utc).strftime('%H:%M:%S UTC')}")
-        print(f"Collected {len(records)} state vectors")
+        print(f"\n\nStopped manually at {datetime.now(tz=timezone.utc).strftime('%H:%M:%S UTC')}")
 
-    # Save everything — even if zero records, write a valid empty file
-    # so load_polled_track() doesn't crash on a partial run
-    payload = {"states": records, "icao24": icao24}
-    with open(output_path, "w") as f:
-        json.dump(payload, f)
+    print(f"Collected {row_count} state vectors for flight_id={flight_id}")
+    mark_flight_landed(conn, flight_id)
+    return flight_id
 
-    print(f"Saved to {output_path}")
-    return records
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Poll OpenSky for a live flight and save state vectors to disk."
+        description="Poll OpenSky for a live flight, attach weather, and store in SQLite."
     )
-    parser.add_argument(
-        "--icao24",
-        required=True,
-        help="ICAO24 hex address of the aircraft (e.g. ada6ed)",
-    )
-    parser.add_argument(
-        "--climb-interval",
-        type=int,
-        default=CLIMB_INTERVAL,
-        help=f"Poll interval in seconds during climb/descent (default: {CLIMB_INTERVAL})",
-    )
-    parser.add_argument(
-        "--cruise-interval",
-        type=int,
-        default=CRUISE_INTERVAL,
-        help=f"Poll interval in seconds during cruise (default: {CRUISE_INTERVAL})",
-    )
-    parser.add_argument(
-        "--output",
-        default=None,
-        help="Output file path (default: cache/live_<icao24>_<timestamp>.json)",
-    )
+    parser.add_argument("--icao24", required=True, help="ICAO24 hex address (e.g. ada6ed)")
+    parser.add_argument("--callsign", default=None, help="Flight callsign (optional, for reference)")
+    parser.add_argument("--dep", default=None, help="Departure airport ICAO code (optional)")
+    parser.add_argument("--arr", default=None, help="Arrival airport ICAO code (optional)")
+    parser.add_argument("--climb-interval", type=int, default=CLIMB_INTERVAL)
+    parser.add_argument("--cruise-interval", type=int, default=CRUISE_INTERVAL)
+    parser.add_argument("--db-path", default=None, help="Override default DB path")
     args = parser.parse_args()
 
-    # Auto-generate output path if not specified, including a timestamp
-    # so multiple flights for the same aircraft don't overwrite each other
-    if args.output is None:
-        ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
-        args.output = os.path.join(CACHE_DIR, f"live_{args.icao24.lower()}_{ts}.json")
+    conn = get_connection(args.db_path) if args.db_path else get_connection()
+    init_db(conn)
 
-    poll_flight(
+    poll_and_store(
         icao24=args.icao24,
-        output_path=args.output,
+        conn=conn,
+        callsign=args.callsign,
+        dep_airport=args.dep,
+        arr_airport=args.arr,
         climb_interval=args.climb_interval,
         cruise_interval=args.cruise_interval,
     )
 
-    #TODO
-    # Continue checking ingestion of data, need to add context for 
+#TODO
+#Add tokens printing to know how many tokens are left.

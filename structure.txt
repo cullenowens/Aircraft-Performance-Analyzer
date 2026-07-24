@@ -1,4 +1,6 @@
 aircraft_analyzer/
+├── pipeline/
+│   └── pipeline.py       # orchestrates the analysis process from polling to processing data
 ├── data/
 │   ├── poller.py         # tracks live time flights
 │   ├── fetcher.py        # OpenSky + NOAA API calls

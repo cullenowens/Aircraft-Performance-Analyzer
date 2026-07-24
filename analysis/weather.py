@@ -1,19 +1,28 @@
 """
 weather.py
 Fetches winds-aloft and temperature data from the NOAA Aviation
-Weather Center API and enriches the flight DataFrame with OAT
-(outside air temperature) and wind components per row.
+Weather Center API and enriches flight data with OAT (outside air
+temperature) and wind components.
+
+Two ways to use this module:
+  1. Live, per-point lookup (used by poller.py during active polling):
+       cache = build_weather_cache()
+       wx = get_weather_for_point(lat, lon, alt_ft, track, cache)
+  2. Batch enrichment of an already-collected DataFrame (used for
+     reprocessing old JSON-based flight caches):
+       df = enrich(df)
 
 NOAA endpoints used (both free, no API key required):
-  /api/data/windtemp  — FD winds/temps aloft forecast text
-  /api/data/stationinfo — station coordinates (fetched once per session)
+  /api/data/windtemp    — FD winds/temps aloft forecast text
+  /api/data/stationinfo — station coordinates (queried per station set)
 
 Important limitation:
   NOAA's windtemp endpoint returns the *current* forecast cycle, not
-  historical data. Weather applied to past flights is approximate —
-  winds-aloft at cruise altitude are stable enough that this is a
-  reasonable approximation for short-to-medium haul flights, but it
-  should be noted in any analysis output.
+  historical data. For live polling this is actually a strength — the
+  poller looks up weather at the moment it captures each point, using
+  whatever forecast cycle is live right then, which is about as close
+  to "real" as this free data source gets. For batch reprocessing of
+  old flights, the weather applied is only approximate.
 
 FD format reference:
   FT  3000    6000    9000   12000   18000   24000  30000  34000  39000
@@ -27,8 +36,8 @@ FD format reference:
 
 import math
 import re
+import time
 from datetime import datetime, timezone
-from functools import lru_cache
 
 import numpy as np
 import pandas as pd
@@ -37,6 +46,102 @@ import requests
 WINDTEMP_URL    = "https://aviationweather.gov/api/data/windtemp"
 STATIONINFO_URL = "https://aviationweather.gov/api/data/stationinfo"
 HEADERS         = {"User-Agent": "AircraftPerformanceAnalyzer/1.0 (student project)"}
+
+# How long a WeatherCache stays valid before the poller should refresh it.
+# NOAA's FD forecast only updates every 6 hours, so refreshing every 15
+# minutes is generous — this just protects a long poll session from
+# using one stale cycle for its entire duration.
+CACHE_TTL_SECONDS = 15 * 60
+
+
+# ---------------------------------------------------------------------------
+# Live weather cache — built once, refreshed periodically, used per-row
+# ---------------------------------------------------------------------------
+
+class WeatherCache:
+    """
+    Holds a fetched-and-parsed snapshot of NOAA winds-aloft data plus
+    station coordinates, so a live poller can look up weather for many
+    points without hitting the network on every single poll.
+
+    Build with build_weather_cache(), pass to get_weather_for_point()
+    for each polled row. Call is_stale() to know when to rebuild.
+    """
+
+    def __init__(self, stations: dict, coords: dict, fetched_at: float):
+        self.stations = stations      # { station_id -> { alt_ft -> {wind_dir, wind_spd, temp_c} } }
+        self.coords = coords          # { station_id -> (lat, lon) }
+        self.fetched_at = fetched_at  # time.time() when built
+
+    def is_stale(self) -> bool:
+        return (time.time() - self.fetched_at) > CACHE_TTL_SECONDS
+
+
+def build_weather_cache(region: str = "us") -> "WeatherCache":
+    """
+    Fetch and parse NOAA winds-aloft data + station coordinates into a
+    WeatherCache. This is the only function that hits the network for
+    live polling — call once at poller startup and whenever
+    WeatherCache.is_stale() is True.
+    """
+    try:
+        raw_low  = _fetch_windtemp_raw(region, "low",  "06")
+        raw_high = _fetch_windtemp_raw(region, "high", "06")
+    except requests.RequestException as e:
+        print(f"[weather] NOAA windtemp fetch failed: {e}. Cache will be empty.")
+        return WeatherCache(stations={}, coords={}, fetched_at=time.time())
+
+    stations = {**_parse_windtemp_table(raw_low)}
+    for sid, data in _parse_windtemp_table(raw_high).items():
+        if sid in stations:
+            stations[sid].update(data)
+        else:
+            stations[sid] = data
+
+    coords = _fetch_station_coords_for_ids(list(stations.keys()))
+
+    return WeatherCache(stations=stations, coords=coords, fetched_at=time.time())
+
+
+def get_weather_for_point(
+    lat: float, lon: float, alt_ft: float, track: float, cache: "WeatherCache"
+) -> dict:
+    """
+    Look up weather for a single point using an already-built WeatherCache.
+    Pure computation, no network call — safe to call once per poll.
+
+    Parameters
+    ----------
+    lat, lon : float          Aircraft position
+    alt_ft   : float          Aircraft barometric altitude in feet
+    track    : float          Aircraft true track in degrees
+    cache    : WeatherCache   Built by build_weather_cache()
+
+    Returns
+    -------
+    dict with keys: oat_c, wind_dir, wind_spd_kts, headwind_kts, crosswind_kts, wx_station
+    """
+    available_ids = list(cache.stations.keys())
+    if not available_ids:
+        return {
+            "oat_c": None, "wind_dir": None, "wind_spd_kts": None,
+            "headwind_kts": 0.0, "crosswind_kts": 0.0, "wx_station": None,
+        }
+
+    nearest = _nearest_station(lat, lon, available_ids, cache.coords)
+    station_data = cache.stations.get(nearest, {})
+
+    wx = _interpolate_at_altitude(station_data, alt_ft)
+    hw, cw = _wind_components(wx["wind_dir"], wx["wind_spd"], track)
+
+    return {
+        "oat_c": wx["temp_c"],
+        "wind_dir": wx["wind_dir"],
+        "wind_spd_kts": wx["wind_spd"],
+        "headwind_kts": hw,
+        "crosswind_kts": cw,
+        "wx_station": nearest,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -48,28 +153,13 @@ def _fetch_station_coords_for_ids(station_ids: list[str]) -> dict[str, tuple[flo
     Fetch coordinates from NOAA's stationinfo endpoint for a specific set
     of station IDs. The FD data uses bare 3-letter codes (ATL, JFK) but
     NOAA's stationinfo endpoint requires K-prefixed ICAO IDs (KATL, KJFK).
-
-    This function converts, queries, and converts back.
-
-    Parameters
-    ----------
-    station_ids : list[str]   3-letter station codes from FD data (e.g. ['ATL', 'JFK', 'RIC'])
-
-    Returns
-    -------
-    dict
-        { station_id_bare -> (lat, lon) } for stations that were successfully looked up.
-        Falls back to hardcoded dict for any missing stations.
     """
     if not station_ids:
-        # No stations in FD response, use fallback
         return _get_fallback_coords()
 
-    # Convert bare codes to K-prefixed ICAO IDs for the API query
     k_prefixed = [f"K{sid}" for sid in station_ids]
 
     try:
-        # Query stationinfo for the specific stations in this FD response
         response = requests.get(
             STATIONINFO_URL,
             params={"ids": ",".join(k_prefixed), "format": "json"},
@@ -84,21 +174,16 @@ def _fetch_station_coords_for_ids(station_ids: list[str]) -> dict[str, tuple[flo
             icao_id = s.get("icaoId") or s.get("id")
             lat     = s.get("lat")
             lon     = s.get("lon")
-
             if icao_id and lat is not None and lon is not None:
-                # Strip K prefix to match FD station codes
                 bare_id = icao_id.lstrip("K").upper()
                 coords[bare_id] = (float(lat), float(lon))
 
-        # If we got at least some coordinates, return what we found
-        # (stations not in stationinfo response won't have coords, which is fine)
         if coords:
             return coords
 
     except Exception as e:
         print(f"[weather] Station coordinate fetch failed: {e}. Using fallback dict.")
 
-    # Fallback — use hardcoded dict
     return _get_fallback_coords()
 
 
@@ -119,11 +204,7 @@ def _get_fallback_coords() -> dict[str, tuple[float, float]]:
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """
-    Great-circle distance in km between two lat/lon points.
-    More accurate than raw degree difference at mid-latitudes where
-    a degree of longitude is shorter than a degree of latitude.
-    """
+    """Great-circle distance in km between two lat/lon points."""
     R = 6371.0
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
@@ -137,25 +218,13 @@ def _nearest_station(
     lat: float, lon: float, available_ids: list[str], coords: dict[str, tuple[float, float]]
 ) -> str | None:
     """
-    Return the station ID from available_ids that is geographically
-    nearest to (lat, lon), using haversine distance for accuracy.
-
-    Parameters
-    ----------
-    lat           : float   Aircraft latitude
-    lon           : float   Aircraft longitude
-    available_ids : list    Station IDs present in the current FD response
-    coords        : dict    { station_id -> (lat, lon) }, pre-fetched by the caller
+    Return the station ID from available_ids nearest to (lat, lon),
+    using haversine distance. Requires pre-fetched coords (no network
+    call here — see build_weather_cache() / _fetch_station_coords_for_ids()).
     """
-    # Only consider stations that successfully got coordinates
-    candidates = {
-        sid: c
-        for sid, c in coords.items()
-        if sid in available_ids
-    }
+    candidates = {sid: c for sid, c in coords.items() if sid in available_ids}
 
     if not candidates:
-        # Last resort — return first available ID with no distance check
         return available_ids[0] if available_ids else None
 
     nearest = min(
@@ -168,19 +237,16 @@ def _nearest_station(
 # ---------------------------------------------------------------------------
 # Fetching FD wind/temp data
 # ---------------------------------------------------------------------------
+_windtemp_cache: dict[tuple[str, str, str], tuple[str, float]] = {}
 
-@lru_cache(maxsize=8)
+
 def _fetch_windtemp_raw(region: str, level: str, fcst: str) -> str:
-    """
-    Fetch raw FD winds/temps text from NOAA. Cached per session so
-    repeated pipeline runs don't re-hit the API.
+    """Fetch raw FD winds/temps text from NOAA. Cached until CACHE_TTL_SECONDS elapses."""
+    key = (region, level, fcst)
+    cached = _windtemp_cache.get(key)
+    if cached is not None and (time.time() - cached[1]) <= CACHE_TTL_SECONDS:
+        return cached[0]
 
-    Parameters
-    ----------
-    region : str   "us" for CONUS-wide, or sub-region like "bos", "chi"
-    level  : str   "low" (3k–18k ft) or "high" (24k–39k ft)
-    fcst   : str   Forecast hour offset: "06", "12", or "24"
-    """
     response = requests.get(
         WINDTEMP_URL,
         params={"region": region, "level": level, "fcst": fcst, "layout": "off"},
@@ -188,6 +254,7 @@ def _fetch_windtemp_raw(region: str, level: str, fcst: str) -> str:
         timeout=15,
     )
     response.raise_for_status()
+    _windtemp_cache[key] = (response.text, time.time())
     return response.text
 
 
@@ -198,15 +265,11 @@ def _fetch_windtemp_raw(region: str, level: str, fcst: str) -> str:
 def _parse_fd_entry(
     entry: str, altitude_ft: int
 ) -> tuple[float | None, float | None, float | None]:
-    """
-    Parse one encoded FD entry into (wind_dir_deg, wind_speed_kts, temp_c).
-    Returns (None, None, None) for calm/variable or unavailable data.
-    """
+    """Parse one encoded FD entry into (wind_dir_deg, wind_speed_kts, temp_c)."""
     entry = entry.strip()
     if not entry or entry.startswith("/") or entry == "9900":
         return None, None, None
 
-    # Above FL240: 6-digit no-sign format, temp always negative
     if altitude_ft > 24000 and re.fullmatch(r"\d{6}", entry):
         return (
             float(int(entry[0:2]) * 10),
@@ -214,7 +277,6 @@ def _parse_fd_entry(
             -float(entry[4:6]),
         )
 
-    # Standard: DDSS+TT or DDSS-TT
     m = re.fullmatch(r"(\d{2})(\d{2})([+-])(\d{1,2})", entry)
     if m:
         sign = 1.0 if m.group(3) == "+" else -1.0
@@ -224,7 +286,6 @@ def _parse_fd_entry(
             sign * float(m.group(4)),
         )
 
-    # Low-altitude entries sometimes omit temperature (e.g. at 3000 ft)
     m2 = re.fullmatch(r"(\d{2})(\d{2})", entry)
     if m2:
         return float(int(m2.group(1)) * 10), float(int(m2.group(2))), None
@@ -278,10 +339,7 @@ def _parse_windtemp_table(raw_text: str) -> dict[str, dict[int, dict]]:
 def _interpolate_at_altitude(
     station_data: dict[int, dict], target_alt_ft: float
 ) -> dict[str, float | None]:
-    """
-    Linearly interpolate wind dir, speed, and temperature between the
-    two nearest reporting altitude bands for a given altitude.
-    """
+    """Linearly interpolate wind dir, speed, temp between nearest altitude bands."""
     available = sorted(
         alt for alt, v in station_data.items() if v["wind_spd"] is not None
     )
@@ -316,10 +374,7 @@ def _interpolate_at_altitude(
 def _wind_components(
     wind_dir: float | None, wind_spd: float | None, track: float
 ) -> tuple[float, float]:
-    """
-    Resolve wind into headwind (+)/tailwind (-) and crosswind components
-    relative to the aircraft's track. Returns (headwind_kts, crosswind_kts).
-    """
+    """Resolve wind into headwind(+)/tailwind(-) and crosswind relative to track."""
     if wind_dir is None or wind_spd is None:
         return 0.0, 0.0
     angle = np.radians(track - wind_dir)
@@ -327,92 +382,43 @@ def _wind_components(
 
 
 # ---------------------------------------------------------------------------
-# Main enrichment function
+# Batch enrichment — for reprocessing old JSON-based flight caches
 # ---------------------------------------------------------------------------
 
 def enrich(df: pd.DataFrame, region: str = "us") -> pd.DataFrame:
     """
-    Fetch NOAA winds-aloft data and add weather columns to the DataFrame.
+    Fetch NOAA winds-aloft data and add weather columns to an entire
+    DataFrame at once. Used for reprocessing old flights collected
+    before the live-weather poller existed. New flights get weather
+    attached row-by-row during polling instead (see get_weather_for_point).
 
-    Uses per-row nearest-station lookup with haversine distance so that
-    a cross-country flight uses geographically appropriate weather data
-    at each point along the route, not just a single station for the
-    whole flight.
-
-    Added columns
-    -------------
-    oat_c         : outside air temperature (°C) at flight altitude
-    wind_dir      : wind direction (degrees true)
-    wind_spd_kts  : wind speed (knots)
-    headwind_kts  : headwind component (+= headwind, -= tailwind)
-    crosswind_kts : crosswind component (knots)
-    wx_station    : which NOAA station was used for each row (useful for debugging)
-    wx_time       : row's time_position formatted as "HH:MM:SS UTC"
-
-    Parameters
-    ----------
-    df     : pd.DataFrame   Output of phase_detector.label_phases()
-    region : str            NOAA region code (default "us" for CONUS-wide)
+    Added columns: oat_c, wind_dir, wind_spd_kts, headwind_kts,
+    crosswind_kts, wx_station, wx_time
     """
     if df.empty:
         return df
 
     df = df.copy()
+    cache = build_weather_cache(region)
 
-    # Fetch low (3k-18k ft) and high (24k-39k ft) altitude tables
-    try:
-        raw_low  = _fetch_windtemp_raw(region, "low",  "06")
-        raw_high = _fetch_windtemp_raw(region, "high", "06")
-    except requests.RequestException as e:
-        print(f"[weather] NOAA windtemp fetch failed: {e}. Weather columns will be NaN.")
+    if not cache.stations:
         for col in ["oat_c", "wind_dir", "wind_spd_kts", "headwind_kts", "crosswind_kts", "wx_station"]:
             df[col] = np.nan
         return df
 
-    # Merge low and high altitude tables
-    all_stations = {**_parse_windtemp_table(raw_low)}
-    for sid, data in _parse_windtemp_table(raw_high).items():
-        if sid in all_stations:
-            all_stations[sid].update(data)
-        else:
-            all_stations[sid] = data
-
-    if not all_stations:
-        print("[weather] Could not parse any station data from NOAA response.")
-        for col in ["oat_c", "wind_dir", "wind_spd_kts", "headwind_kts", "crosswind_kts", "wx_station"]:
-            df[col] = np.nan
-        return df
-
-    available_ids = list(all_stations.keys())
-
-    # Per-row enrichment — nearest station selected at each row's actual
-    # lat/lon position so cross-country flights get geographically
-    # appropriate weather data throughout the route
     oat_list, wdir_list, wspd_list, hw_list, cw_list, stn_list, time_list = [], [], [], [], [], [], []
 
-    # Station coordinates are static for a given available_ids set, so we only
-    # need to hit NOAA's stationinfo endpoint periodically rather than once per
-    # row. Every STATION_COORD_REFRESH_ROWS rows we refresh the cache; rows in
-    # between reuse the last fetched coordinates.
-    STATION_COORD_REFRESH_ROWS = 10
-    coord_cache = None
-
-    for i, (_, row) in enumerate(df.iterrows()):
-        if coord_cache is None or i % STATION_COORD_REFRESH_ROWS == 0:
-            coord_cache = _fetch_station_coords_for_ids(available_ids)
-
-        nearest = _nearest_station(row["latitude"], row["longitude"], available_ids, coord_cache)
-        stn_list.append(nearest)
-        station_data = all_stations.get(nearest, {})
-
-        wx = _interpolate_at_altitude(station_data, row["baro_altitude"])
-        hw, cw = _wind_components(wx["wind_dir"], wx["wind_spd"], row.get("true_track", 0))
-
-        oat_list.append(wx["temp_c"])
+    for _, row in df.iterrows():
+        wx = get_weather_for_point(
+            row["latitude"], row["longitude"], row["baro_altitude"],
+            row.get("true_track", 0), cache,
+        )
+        oat_list.append(wx["oat_c"])
         wdir_list.append(wx["wind_dir"])
-        wspd_list.append(wx["wind_spd"])
-        hw_list.append(hw)
-        cw_list.append(cw)
+        wspd_list.append(wx["wind_spd_kts"])
+        hw_list.append(wx["headwind_kts"])
+        cw_list.append(wx["crosswind_kts"])
+        stn_list.append(wx["wx_station"])
 
         row_time = row.get("time_position")
         time_list.append(
@@ -436,38 +442,30 @@ def enrich(df: pd.DataFrame, region: str = "us") -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    print("Testing dynamic station coordinate fetch for specific stations...")
-    sample_ids = ["ATL", "RIC", "RDU", "SEA", "ORD"]
-    coords = _fetch_station_coords_for_ids(sample_ids)
-    print(f"Loaded {len(coords)} station coordinates")
-    for sid in sample_ids:
-        print(f"  {sid}: {coords.get(sid, 'NOT FOUND (used fallback)')}")
-
-    print("\nTesting nearest station (DCA→ATL midpoint at 37°N, 79°W)...")
-    # Simulate stations available in a typical ATL→JFK FD response
-    sample_ids = ["ATL", "JFK", "RIC", "RDU", "GSP", "BOS", "ORD", "CLT", "ORF"]
-    sample_coords = _fetch_station_coords_for_ids(sample_ids)
-    nearest = _nearest_station(37.0, -79.0, sample_ids, sample_coords)
-    print(f"  Selected: {nearest}  (expected: RIC or RDU)")
-
-    print("\nTesting FD parser with sample data...")
+    print("Testing WeatherCache with sample FD data (no network)...")
     sample_fd = """
 FT  3000    6000    9000   12000   18000   24000  30000  34000  39000
 ATL 9900 3217+15 3114+11 3116+05 2722-08 2740-17 275732 265742 255754
 RIC 2510 2615+13 2718+09 2820+04 2935-07 3040-18 304533 295243 286054
 """
     stations = _parse_windtemp_table(sample_fd)
-    print(f"  Parsed: {list(stations.keys())}")
-    ric_9k = stations.get("RIC", {}).get(9000)
-    print(f"  RIC at 9000 ft: {ric_9k}")
+    coords = {"ATL": (33.64, -84.43), "RIC": (37.51, -77.32)}
+    cache = WeatherCache(stations=stations, coords=coords, fetched_at=time.time())
 
-    interp = _interpolate_at_altitude(stations["RIC"], 10500)
-    print(f"  RIC interpolated at 10,500 ft: {interp}")
-    hw, cw = _wind_components(interp["wind_dir"], interp["wind_spd"], 200)
-    print(f"  Headwind: {hw:.1f} kts  Crosswind: {cw:.1f} kts (track 200°)")
+    print(f"Cache stations: {list(cache.stations.keys())}")
+    print(f"Cache is_stale: {cache.is_stale()}")
 
-    #TODO
-    # Be able to pull weather data while the plane passes through the airspace, not just at the start and end of the flight
-    # This would require a more dynamic approach to fetching and applying weather data, potentially using real-time APIs or more frequent polling of weather conditions along the flight path.
-    # Would also mean we would have to pass data to a database as it's ingested to process in real-time
-    # Test output and check for accuracy and if it fits desire
+    print("\nLookup near ATL at 9000ft, track 90°:")
+    wx = get_weather_for_point(33.7, -84.5, 9000, 90, cache)
+    print(f"  {wx}")
+
+    print("\nLookup near RIC at 10500ft, track 200° (interpolated altitude):")
+    wx2 = get_weather_for_point(37.5, -77.3, 10500, 200, cache)
+    print(f"  {wx2}")
+
+    print("\nTesting staleness after TTL:")
+    old_cache = WeatherCache(stations=stations, coords=coords, fetched_at=time.time() - CACHE_TTL_SECONDS - 1)
+    print(f"  Old cache is_stale: {old_cache.is_stale()} (expected True)")
+
+#TODO
+# Add better weather handling for heights
