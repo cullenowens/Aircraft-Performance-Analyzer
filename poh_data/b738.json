@@ -1,0 +1,63 @@
+{
+  "aircraft": {
+    "type": "Boeing 737-800",
+    "icao_type": "B738",
+    "category": "transport",
+    "engine": "CFM56-7B",
+    "reference_weight_lbs": null,
+    "source": "Limits (service ceiling 41,000 ft, Mmo 0.82, typical cruise Mach 0.785-0.79) corroborated across multiple independent aviation reference sites. Cruise and descent figures anchored to SKYbrary's published indicative performance data for the B738 (cruise TAS 460kt/M0.79 at FL410; initial descent to FL240 at M0.78/800fpm; descent to FL100 at 290 KIAS/3500fpm).",
+    "source_confidence": "MODERATE-HIGH. SKYbrary aggregates from operational/manufacturer-derived sources and is a reputable industry reference, but this is still NOT the certified Boeing AFM/FCOM performance table, which is proprietary. Climb table (not published by SKYbrary for this type) is extrapolated from the descent/cruise anchor points plus typical NG-family climb schedule.",
+    "verified": false
+  },
+
+  "limits": {
+    "service_ceiling_ft": 41000,
+    "mmo": 0.82,
+    "vmo_kias": 340,
+    "typical_initial_cruise_ft": 33000,
+    "typical_max_cruise_ft": 39000
+  },
+
+  "climb": {
+    "reference_condition": "Typical airline climb profile, moderate weight, ISA. Speed schedule: 250 KIAS below FL100, ~290-300 KIAS climb, transitioning to Mach ~0.76-0.78.",
+    "lookup_key": "density_altitude_ft",
+    "notes": "EXTRAPOLATED from typical NG-family climb performance; not a SKYbrary-published climb table (their B738 entry publishes cruise and descent data but not a climb schedule).",
+    "table": [
+      { "density_altitude_ft": 0,     "roc_fpm": 2600, "kias": 250 },
+      { "density_altitude_ft": 5000,  "roc_fpm": 2350, "kias": 280 },
+      { "density_altitude_ft": 10000, "roc_fpm": 2150, "kias": 290 },
+      { "density_altitude_ft": 15000, "roc_fpm": 1800, "kias": 295 },
+      { "density_altitude_ft": 20000, "roc_fpm": 1500, "kias": 295 },
+      { "density_altitude_ft": 24000, "roc_fpm": 1250, "kias": 290 },
+      { "density_altitude_ft": 30000, "roc_fpm": 900,  "kias": 275 },
+      { "density_altitude_ft": 35000, "roc_fpm": 550,  "kias": 260 },
+      { "density_altitude_ft": 39000, "roc_fpm": 250,  "kias": 250 }
+    ]
+  },
+
+  "cruise": {
+    "reference_condition": "Long range cruise, ISA, published SKYbrary indicative data point at FL410",
+    "speed_type": "mach",
+    "notes": "SKYbrary publishes a single cruise data point (TAS 460kt / M0.79 at FL410/ceiling). Other bands interpolated from typical NG cruise Mach (0.785) reported across independent sources.",
+    "table": [
+      { "density_altitude_ft": 28000, "mach": 0.77 },
+      { "density_altitude_ft": 31000, "mach": 0.785 },
+      { "density_altitude_ft": 33000, "mach": 0.785 },
+      { "density_altitude_ft": 35000, "mach": 0.785 },
+      { "density_altitude_ft": 37000, "mach": 0.79 },
+      { "density_altitude_ft": 41000, "mach": 0.79 }
+    ]
+  },
+
+  "descent": {
+    "reference_condition": "SKYbrary published descent profile: initial descent to FL240 at Mach 0.78 / 800 fpm; descent to FL100 at 290 KIAS / 3500 fpm.",
+    "notes": "This is a SOURCED figure (SKYbrary), not extrapolated — the two-segment profile below is more reliable than the climb table in this file. The overall 'typical_rod_fpm' below is a duration-weighted blend of the two published segments for use as a single-number comparison; compare_descent() in poh_compare.py uses this single blended value rather than the two segments separately.",
+    "typical_rod_fpm": -2150,
+    "typical_kias": 290,
+    "descent_gradient_nm_per_1000ft": 3.0,
+    "published_segments": [
+      { "from_fl": 410, "to_fl": 240, "mach": 0.78, "rod_fpm": -800 },
+      { "from_fl": 240, "to_fl": 100, "kias": 290, "rod_fpm": -3500 }
+    ]
+  }
+}

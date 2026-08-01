@@ -25,11 +25,58 @@ DESCENT_VS_THRESHOLD = -200
 # rather than a generic climb or descent segment
 LANDING_ALT_THRESHOLD = 2500
 
-# Rolling window size (rows) for smoothing vertical_rate before thresholding.
-# center=True in the rolling call means each smoothed value uses rows both
-# before and after it, so phase transitions aren't lagged behind the real
-# transition point.
-SMOOTHING_WINDOW = 30
+# Rolling window SIZE IN SECONDS (not rows) for smoothing vertical_rate
+# before thresholding. Using seconds rather than row count matters
+# because the poller samples at different intervals depending on
+# phase (10s during climb/descent, 60s during cruise) — a fixed ROW
+# count would span wildly different real time depending on which
+# interval was active when those rows were collected, causing
+# inconsistent smoothing and fragmenting real level-off segments into
+# spurious "cruise" blips during what's actually one continuous climb
+# or descent. A time-based window behaves consistently regardless of
+# sampling density.
+SMOOTHING_WINDOW_SECONDS = 90
+
+# Centered means each smoothed value uses rows both before AND after
+# its own timestamp, so phase transitions aren't lagged behind the
+# real transition point. Pandas' offset-based rolling (.rolling('90s'))
+# does NOT support center=True, so this is implemented manually below
+# via a two-pointer scan over sorted timestamps.
+
+
+def _time_centered_mean(times: np.ndarray, values: np.ndarray, window_seconds: float) -> np.ndarray:
+    """
+    Centered rolling mean of `values`, using a time window of
+    +/- window_seconds/2 around each row's own timestamp in `times`
+    (not a row count). `times` must be sorted ascending.
+
+    Uses a two-pointer scan — O(n) amortized rather than O(n*window)
+    — since both pointers only ever move forward as `times` is sorted.
+
+    NaN values within a window are ignored (matching pandas' rolling
+    mean default skipna behavior). A row with zero valid neighbors in
+    its window returns NaN.
+    """
+    n = len(times)
+    half = window_seconds / 2.0
+    out = np.empty(n)
+
+    left = 0
+    right = 0
+    for i in range(n):
+        t = times[i]
+        while left < n and times[left] < t - half:
+            left += 1
+        # right must never retreat behind i+1's eventual window either,
+        # but since times is sorted and half>=0 this simple advance is correct
+        while right < n and times[right] <= t + half:
+            right += 1
+
+        window_vals = values[left:right]
+        valid = window_vals[~np.isnan(window_vals)]
+        out[i] = valid.mean() if len(valid) else np.nan
+
+    return out
 
 
 def label_phases(df: pd.DataFrame) -> pd.DataFrame:
@@ -41,8 +88,8 @@ def label_phases(df: pd.DataFrame) -> pd.DataFrame:
     ----------
     df : pd.DataFrame
         Must have columns: vertical_rate (fpm), baro_altitude (ft),
-        on_ground (bool). Rows should already be sorted by time —
-        this function sorts by time_position defensively if present.
+        on_ground (bool), time_position (unix seconds). Rows should
+        already be sorted by time — this function sorts defensively.
 
     Returns
     -------
@@ -51,18 +98,18 @@ def label_phases(df: pd.DataFrame) -> pd.DataFrame:
     """
     df = df.copy()
 
-    if "time_position" in df.columns:
-        df = df.sort_values("time_position").reset_index(drop=True)
+    if "time_position" not in df.columns:
+        raise ValueError(
+            "label_phases() requires a 'time_position' column — the smoothing "
+            "window is time-based (seconds), not row-based, to handle the "
+            "poller's variable sampling interval correctly."
+        )
 
-    # Smooth vertical_rate over a rolling window. min_periods=1 means
-    # rows near the start/end of the flight still get a value (using
-    # however many rows are available) instead of falling through to
-    # cruise by default due to NaN.
-    df["smoothed_vs"] = (
-        df["vertical_rate"]
-        .rolling(window=SMOOTHING_WINDOW, center=True, min_periods=1)
-        .mean()
-    )
+    df = df.sort_values("time_position").reset_index(drop=True)
+
+    times  = df["time_position"].to_numpy(dtype=float)
+    values = df["vertical_rate"].to_numpy(dtype=float)
+    df["smoothed_vs"] = _time_centered_mean(times, values, SMOOTHING_WINDOW_SECONDS)
 
     # on_ground is checked first and unconditionally — a grounded
     # aircraft with near-zero smoothed VS would otherwise silently

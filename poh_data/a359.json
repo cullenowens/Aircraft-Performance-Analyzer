@@ -1,0 +1,60 @@
+{
+  "aircraft": {
+    "type": "Airbus A350-900",
+    "icao_type": "A359",
+    "category": "transport",
+    "engine": "Rolls-Royce Trent XWB",
+    "reference_weight_lbs": null,
+    "source": "Climb schedule and cruise/ceiling figures ANCHORED TO SKYbrary's published indicative performance data: Initial climb to 5,000ft at 220 KIAS/3000fpm; to FL150 at 300 KIAS/2300fpm; to FL240 at 300 KIAS/1600fpm; Mach climb at M0.82/1400fpm; cruise TAS 487kt/M0.85 at FL431 (ceiling). Mmo of 0.88 comes from a single secondary aggregator (aircraftinvestigation.info), not independently corroborated — treat that one figure with more caution than the rest of this file.",
+    "source_confidence": "HIGH for climb schedule, cruise speed, and ceiling (SKYbrary, a reputable industry aggregator, publishes specific altitude-banded figures for this type — the strongest sourcing of any file in this set). LOWER CONFIDENCE for Mmo specifically (single non-primary source).",
+    "verified": false
+  },
+
+  "limits": {
+    "service_ceiling_ft": 43100,
+    "mmo": 0.88,
+    "vmo_kias": 330,
+    "typical_initial_cruise_ft": 35000,
+    "typical_max_cruise_ft": 41000
+  },
+
+  "climb": {
+    "reference_condition": "SKYbrary published indicative climb schedule: 220 KIAS to 5,000ft, 300 KIAS to FL240, then Mach 0.82 above.",
+    "lookup_key": "density_altitude_ft",
+    "notes": "This is the most directly sourced climb table in the reference set — band boundaries and ROC values below 24,000 ft come straight from SKYbrary's published schedule rather than being interpolated or extrapolated by this project. Above FL240 the Mach-climb figure (1400 fpm at M0.82) is extended smoothly to the service ceiling since SKYbrary does not break out further high-altitude bands.",
+    "table": [
+      { "density_altitude_ft": 0,     "roc_fpm": 3000, "kias": 220 },
+      { "density_altitude_ft": 5000,  "roc_fpm": 3000, "kias": 220 },
+      { "density_altitude_ft": 10000, "roc_fpm": 2300, "kias": 300 },
+      { "density_altitude_ft": 15000, "roc_fpm": 2300, "kias": 300 },
+      { "density_altitude_ft": 20000, "roc_fpm": 1600, "kias": 300 },
+      { "density_altitude_ft": 24000, "roc_fpm": 1600, "kias": 300 },
+      { "density_altitude_ft": 30000, "roc_fpm": 1400, "kias": null },
+      { "density_altitude_ft": 35000, "roc_fpm": 1100, "kias": null },
+      { "density_altitude_ft": 39000, "roc_fpm": 700,  "kias": null },
+      { "density_altitude_ft": 43100, "roc_fpm": 300,  "kias": null }
+    ]
+  },
+
+  "cruise": {
+    "reference_condition": "SKYbrary published cruise data point: TAS 487kt, Mach 0.85, ceiling FL431",
+    "speed_type": "mach",
+    "notes": "0.85 is directly sourced (SKYbrary) as the representative cruise figure at this type's published ceiling. Lower-altitude bands are interpolated downward using the typical long-range-cruise Mach pattern reported for the type (mid-0.84 to 0.85 range across independent sources).",
+    "table": [
+      { "density_altitude_ft": 31000, "mach": 0.83 },
+      { "density_altitude_ft": 33000, "mach": 0.84 },
+      { "density_altitude_ft": 35000, "mach": 0.85 },
+      { "density_altitude_ft": 37000, "mach": 0.85 },
+      { "density_altitude_ft": 39000, "mach": 0.85 },
+      { "density_altitude_ft": 43100, "mach": 0.85 }
+    ]
+  },
+
+  "descent": {
+    "reference_condition": "SKYbrary published initial descent: Mach 0.85 from FL431/cruise toward FL240",
+    "notes": "SKYbrary's published descent entry for this type was truncated in the source consulted (rate of descent value for the initial segment was not captured). The typical_rod_fpm below is this project's typical-widebody estimate, NOT a sourced SKYbrary figure — lower confidence than the climb table above.",
+    "typical_rod_fpm": -1800,
+    "typical_kias": 300,
+    "descent_gradient_nm_per_1000ft": 3.2
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "aircraft": {
+    "type": "Boeing 737-900",
+    "icao_type": "B739",
+    "category": "transport",
+    "engine": "CFM56-7B",
+    "reference_weight_lbs": null,
+    "source": "Same CFM56-7B engine family and airframe lineage as the 737-800 (stretched fuselage, competitor to the A321). Limits (service ceiling, Mmo) shared across NG family per multiple sources. No 737-900-specific published performance table was found; this file scales the sourced B738 profile down slightly to reflect the -900's greater typical operating weight for the same engine thrust.",
+    "source_confidence": "MODERATE. Limits are family-wide and well corroborated. Climb/cruise/descent table is derived from the B738 file (poh_data/b738.json) with a small downward adjustment, not independently sourced for the -900 specifically.",
+    "verified": false
+  },
+
+  "limits": {
+    "service_ceiling_ft": 41000,
+    "mmo": 0.82,
+    "vmo_kias": 340,
+    "typical_initial_cruise_ft": 32000,
+    "typical_max_cruise_ft": 39000
+  },
+
+  "climb": {
+    "reference_condition": "Typical airline climb profile, moderate weight, ISA. Same speed schedule as 737-800.",
+    "lookup_key": "density_altitude_ft",
+    "notes": "Derived from b738.json climb table, reduced ~10% to reflect the -900's greater typical weight (longer fuselage, more seats) on the same engine thrust rating.",
+    "table": [
+      { "density_altitude_ft": 0,     "roc_fpm": 2350, "kias": 250 },
+      { "density_altitude_ft": 5000,  "roc_fpm": 2100, "kias": 280 },
+      { "density_altitude_ft": 10000, "roc_fpm": 1950, "kias": 290 },
+      { "density_altitude_ft": 15000, "roc_fpm": 1650, "kias": 295 },
+      { "density_altitude_ft": 20000, "roc_fpm": 1350, "kias": 295 },
+      { "density_altitude_ft": 24000, "roc_fpm": 1100, "kias": 290 },
+      { "density_altitude_ft": 30000, "roc_fpm": 800,  "kias": 275 },
+      { "density_altitude_ft": 35000, "roc_fpm": 480,  "kias": 260 },
+      { "density_altitude_ft": 39000, "roc_fpm": 200,  "kias": 250 }
+    ]
+  },
+
+  "cruise": {
+    "reference_condition": "Long range cruise, ISA",
+    "speed_type": "mach",
+    "notes": "Same typical cruise Mach as the -800 (shared wing/engine family); slightly heavier weight typically means the -900 sits marginally lower in the altitude/Mach envelope on a given route, not reflected numerically here.",
+    "table": [
+      { "density_altitude_ft": 28000, "mach": 0.77 },
+      { "density_altitude_ft": 31000, "mach": 0.785 },
+      { "density_altitude_ft": 33000, "mach": 0.785 },
+      { "density_altitude_ft": 35000, "mach": 0.785 },
+      { "density_altitude_ft": 37000, "mach": 0.79 },
+      { "density_altitude_ft": 41000, "mach": 0.79 }
+    ]
+  },
+
+  "descent": {
+    "reference_condition": "Same descent technique as 737-800 (Mach 0.78 initial, 290 KIAS below FL240)",
+    "notes": "Not independently sourced for the -900; assumed identical descent technique to b738.json since descent rate is thrust-idle/drag-driven and less weight-sensitive than climb.",
+    "typical_rod_fpm": -2150,
+    "typical_kias": 290,
+    "descent_gradient_nm_per_1000ft": 3.0
+  }
+}

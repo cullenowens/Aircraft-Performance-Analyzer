@@ -32,8 +32,9 @@ import requests
 from auth import tokens
 from data.db import (
     get_connection, init_db, create_flight, insert_state_vector,
-    mark_flight_landed,
+    mark_flight_landed, set_aircraft_type,
 )
+from data.aircraft_lookup import lookup_typecode
 from analysis.weather import build_weather_cache, get_weather_for_point
 
 OPENSKY_BASE_URL = "https://opensky-network.org/api"
@@ -41,7 +42,7 @@ OPENSKY_BASE_URL = "https://opensky-network.org/api"
 # Poll intervals in seconds by flight phase — dense during transitions,
 # sparse during stable cruise to conserve API credits.
 CLIMB_INTERVAL  = 10
-CRUISE_INTERVAL = 30
+CRUISE_INTERVAL = 60
 
 # Safety-net fallback: if this many consecutive on_ground polls happen,
 # stop regardless of whether the full phase history was observed. This
@@ -93,7 +94,7 @@ def _live_phase_hint(on_ground: bool, alt_ft: float | None, vs_fpm: float | None
     # vertical rate means descending toward touchdown, not climbing out.
     if alt_ft < 2500 and vs_fpm is not None and vs_fpm < -200:
         return "landing"
-    if alt_ft < 1000:
+    if alt_ft < 1500:
         return "takeoff"
     if vs_fpm is None:
         return "cruise" if alt_ft > 10000 else "unknown"
@@ -127,6 +128,17 @@ def poll_and_store(
     icao24 = icao24.lower().strip()
     flight_id = create_flight(conn, icao24, callsign, dep_airport, arr_airport)
 
+    # Resolve aircraft type from OpenSky's metadata database, best-effort.
+    # A miss here (unknown type, download failure, coverage gap) is a
+    # normal outcome, not an error — poh_compare falls back to a
+    # descriptive-only report when aircraft_type is unset.
+    typecode = lookup_typecode(icao24)
+    if typecode:
+        set_aircraft_type(conn, flight_id, typecode)
+        print(f"[poller] Aircraft type resolved: {typecode}")
+    else:
+        print(f"[poller] Aircraft type unknown (not found in OpenSky metadata).")
+
     print(f"\nChecking API credit balance...")
     credits = check_credits(icao24)
     if credits == 0:
@@ -148,7 +160,6 @@ def poll_and_store(
     consecutive_ground = 0
     row_count = 0
     landed_confirmed = False
-    has_been_airborne = False
 
     try:
         while True:
@@ -218,8 +229,6 @@ def poll_and_store(
                 if hint not in ("on_ground", "unknown"):
                     seen_phases.add(hint)
                 consecutive_ground = consecutive_ground + 1 if on_ground else 0
-                if not on_ground:
-                    has_been_airborne = True
 
                 # Weather lookup — pure computation against the cached
                 # NOAA tables, no network call on this hot path
@@ -262,11 +271,8 @@ def poll_and_store(
                     break
 
                 # Safety-net fallback: on_ground for a while regardless
-                # of phase history (protects against coverage gaps).
-                # Gated on has_been_airborne so this can't fire while the
-                # aircraft is still sitting at the gate before departure —
-                # see the has_been_airborne comment near its initialization.
-                if consecutive_ground >= GROUND_SAFETY_LIMIT and has_been_airborne:
+                # of phase history (protects against coverage gaps)
+                if consecutive_ground >= GROUND_SAFETY_LIMIT:
                     missing = REQUIRED_PHASES_FOR_LANDING - seen_phases
                     print(f"\n[landing] On ground for {consecutive_ground} consecutive polls "
                           f"(safety fallback — missing phases: {missing or 'none'}). Stopping.")
@@ -313,5 +319,5 @@ if __name__ == "__main__":
         cruise_interval=args.cruise_interval,
     )
 
-#TODO
-#Add tokens printing to know how many tokens are left.
+    #TODO
+    # Improved stage -- if below xft, should not be cruise

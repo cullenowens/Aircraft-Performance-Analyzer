@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS flights (
     callsign        TEXT,
     dep_airport     TEXT,
     arr_airport     TEXT,
+    aircraft_type   TEXT,      -- ICAO typecode e.g. "A321", "C172" — see aircraft_lookup.py
     poll_started_at INTEGER,
     poll_ended_at   INTEGER,
     status          TEXT DEFAULT 'polling'   -- polling | landed | processed
@@ -77,9 +78,27 @@ def get_connection(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """Create tables and indexes if they don't already exist. Safe to call every run."""
+    """
+    Create tables and indexes if they don't already exist. Safe to call
+    every run. Also runs a small migration step for databases created
+    before the aircraft_type column existed — CREATE TABLE IF NOT EXISTS
+    alone won't add a column to an already-existing table.
+    """
     conn.executescript(SCHEMA)
     conn.commit()
+    _migrate_add_aircraft_type_column(conn)
+
+
+def _migrate_add_aircraft_type_column(conn: sqlite3.Connection) -> None:
+    """
+    Add the aircraft_type column to an existing flights table if it's
+    missing (i.e. the database was created before this column existed).
+    No-op if the column is already present.
+    """
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(flights)").fetchall()}
+    if "aircraft_type" not in existing_cols:
+        conn.execute("ALTER TABLE flights ADD COLUMN aircraft_type TEXT")
+        conn.commit()
 
 
 def create_flight(
@@ -88,21 +107,40 @@ def create_flight(
     callsign: str | None = None,
     dep_airport: str | None = None,
     arr_airport: str | None = None,
+    aircraft_type: str | None = None,
 ) -> int:
     """
     Insert a new flight record and return its flight_id.
     Called once at the start of a poll session.
+
+    aircraft_type is the ICAO typecode (e.g. "A321", "C172"). Pass it
+    explicitly if known, or leave None and populate later via
+    set_aircraft_type() — see data.aircraft_lookup.lookup_typecode()
+    for resolving it automatically from the icao24 hex.
     """
     now = int(datetime.now(tz=timezone.utc).timestamp())
     cur = conn.execute(
         """
-        INSERT INTO flights (icao24, callsign, dep_airport, arr_airport, poll_started_at, status)
-        VALUES (?, ?, ?, ?, ?, 'polling')
+        INSERT INTO flights (icao24, callsign, dep_airport, arr_airport, aircraft_type, poll_started_at, status)
+        VALUES (?, ?, ?, ?, ?, ?, 'polling')
         """,
-        (icao24.lower(), callsign, dep_airport, arr_airport, now),
+        (icao24.lower(), callsign, dep_airport, arr_airport, aircraft_type, now),
     )
     conn.commit()
     return cur.lastrowid
+
+
+def set_aircraft_type(conn: sqlite3.Connection, flight_id: int, aircraft_type: str) -> None:
+    """
+    Populate (or update) a flight's aircraft_type after the fact — e.g.
+    once data.aircraft_lookup.lookup_typecode() resolves it, which may
+    happen lazily rather than at create_flight() time.
+    """
+    conn.execute(
+        "UPDATE flights SET aircraft_type = ? WHERE flight_id = ?",
+        (aircraft_type, flight_id),
+    )
+    conn.commit()
 
 
 def insert_state_vector(conn: sqlite3.Connection, flight_id: int, row: dict) -> None:
@@ -162,6 +200,33 @@ def mark_flight_processed(conn: sqlite3.Connection, flight_id: int) -> None:
         "UPDATE flights SET status = 'processed' WHERE flight_id = ?",
         (flight_id,),
     )
+    conn.commit()
+
+
+def delete_flight(conn: sqlite3.Connection, flight_id: int) -> int:
+    """
+    Delete a flight and all its state vectors. Useful for clearing out
+    test data during development.
+
+    Returns
+    -------
+    int
+        Number of state_vectors rows deleted.
+    """
+    cur = conn.execute("DELETE FROM state_vectors WHERE flight_id = ?", (flight_id,))
+    deleted_rows = cur.rowcount
+    conn.execute("DELETE FROM flights WHERE flight_id = ?", (flight_id,))
+    conn.commit()
+    return deleted_rows
+
+
+def delete_all_flights(conn: sqlite3.Connection) -> None:
+    """
+    Wipe every flight and state vector from the database — a full reset.
+    Equivalent to deleting the .db file, but keeps the file/schema in place.
+    """
+    conn.execute("DELETE FROM state_vectors")
+    conn.execute("DELETE FROM flights")
     conn.commit()
 
 

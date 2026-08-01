@@ -1,0 +1,63 @@
+{
+  "aircraft": {
+    "type": "Airbus A321neo",
+    "icao_type": "A21N",
+    "category": "transport",
+    "engine": "CFM LEAP-1A or Pratt & Whitney PW1100G-JM",
+    "reference_weight_lbs": null,
+    "source": "Limits (Mmo 0.82, typical cruise Mach 0.78, service ceiling 39,800 ft) corroborated across multiple independent sources including Airbus-derived specification summaries. Climb/cruise/descent profile ADAPTED from SKYbrary's published A321(ceo) indicative performance data (cruise TAS 450kt/M0.79 at FL410; initial descent to FL240 at M0.78/1000fpm; descent to FL100 at 290 KIAS/2500fpm) — the neo shares the ceo's airframe aerodynamics with re-engined, more efficient powerplants, so profile shape is expected to be very similar despite the source being for the ceo variant specifically.",
+    "source_confidence": "MODERATE. Limits are well corroborated for the neo specifically. The climb/descent PROFILE SHAPE is sourced (SKYbrary) but for the ceo variant, not the neo — treat this as a reasonable proxy, not a neo-specific certified figure.",
+    "verified": false
+  },
+
+  "limits": {
+    "service_ceiling_ft": 39800,
+    "mmo": 0.82,
+    "vmo_kias": 350,
+    "typical_initial_cruise_ft": 33000,
+    "typical_max_cruise_ft": 39000
+  },
+
+  "climb": {
+    "reference_condition": "Typical airline climb profile, moderate weight, ISA. Speed schedule: 250 KIAS below FL100, ~300 KIAS climb, transitioning to Mach ~0.78.",
+    "lookup_key": "density_altitude_ft",
+    "notes": "Adapted from A321ceo typical profile; neo's more efficient LEAP-1A/PW1100G engines may produce modestly better climb performance at a given weight than the ceo's CFM56/V2500, which this table does not attempt to quantify.",
+    "table": [
+      { "density_altitude_ft": 0,     "roc_fpm": 2500, "kias": 250 },
+      { "density_altitude_ft": 5000,  "roc_fpm": 2300, "kias": 280 },
+      { "density_altitude_ft": 10000, "roc_fpm": 2150, "kias": 300 },
+      { "density_altitude_ft": 15000, "roc_fpm": 1850, "kias": 300 },
+      { "density_altitude_ft": 20000, "roc_fpm": 1550, "kias": 300 },
+      { "density_altitude_ft": 25000, "roc_fpm": 1250, "kias": 295 },
+      { "density_altitude_ft": 30000, "roc_fpm": 950,  "kias": 285 },
+      { "density_altitude_ft": 35000, "roc_fpm": 580,  "kias": 270 },
+      { "density_altitude_ft": 39000, "roc_fpm": 280,  "kias": 260 }
+    ]
+  },
+
+  "cruise": {
+    "reference_condition": "Typical cruise, ISA — SKYbrary published data point (ceo): TAS 450kt/M0.79 at FL410",
+    "speed_type": "mach",
+    "notes": "0.78 typical cruise Mach is the most consistently reported figure for the neo family specifically across independent sources.",
+    "table": [
+      { "density_altitude_ft": 28000, "mach": 0.76 },
+      { "density_altitude_ft": 31000, "mach": 0.78 },
+      { "density_altitude_ft": 33000, "mach": 0.78 },
+      { "density_altitude_ft": 35000, "mach": 0.78 },
+      { "density_altitude_ft": 37000, "mach": 0.79 },
+      { "density_altitude_ft": 39800, "mach": 0.79 }
+    ]
+  },
+
+  "descent": {
+    "reference_condition": "SKYbrary published descent profile (A321ceo, adapted): initial descent to FL240 at Mach 0.78/1000fpm; descent to FL100 at 290 KIAS/2500fpm.",
+    "notes": "Sourced from SKYbrary's A321(ceo) entry, not neo-specific. Blended single-value figure below combines the two published segments duration-weighted.",
+    "typical_rod_fpm": -1900,
+    "typical_kias": 290,
+    "descent_gradient_nm_per_1000ft": 3.0,
+    "published_segments": [
+      { "from_fl": 410, "to_fl": 240, "mach": 0.78, "rod_fpm": -1000 },
+      { "from_fl": 240, "to_fl": 100, "kias": 290, "rod_fpm": -2500 }
+    ]
+  }
+}

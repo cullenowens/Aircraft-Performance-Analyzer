@@ -1,0 +1,59 @@
+{
+  "aircraft": {
+    "type": "Boeing 757-200",
+    "icao_type": "B752",
+    "category": "transport",
+    "engine": "Rolls-Royce RB211-535 or Pratt & Whitney PW2000 series",
+    "reference_weight_lbs": null,
+    "source": "Published manufacturer/industry specifications (service ceiling, Mmo, typical cruise Mach) cross-checked across multiple independent aviation reference sites. Climb/descent table is NOT from a 757-specific published source (none was found) — it is extrapolated from SKYbrary's indicative performance data for similarly-sized narrowbody transports (737-800, A321), scaled to reflect the 757's well-documented high thrust-to-weight ratio and stronger-than-typical climb performance for its class.",
+    "source_confidence": "LIMITS (ceiling, Mmo, typical cruise Mach) are corroborated across 3+ independent sources. CLIMB/DESCENT TABLE IS AN EXTRAPOLATION, NOT A SOURCED FIGURE for this specific type — treat band-by-band deltas with more skepticism than the A321/A359/B738 files, which are anchored to published data.",
+    "verified": false
+  },
+
+  "limits": {
+    "service_ceiling_ft": 42000,
+    "mmo": 0.86,
+    "vmo_kias": null,
+    "typical_initial_cruise_ft": 33000,
+    "typical_max_cruise_ft": 39000
+  },
+
+  "climb": {
+    "reference_condition": "Typical airline climb profile, moderate weight, ISA. Speed schedule: 250 KIAS below FL100, ~320-330 KIAS climb, transitioning to Mach ~0.78-0.80 at crossover.",
+    "lookup_key": "density_altitude_ft",
+    "notes": "EXTRAPOLATED, not sourced from a 757-specific table. Built by scaling SKYbrary's published 737-800/A321 climb profiles upward by roughly 15-20% at low-to-mid altitude to reflect the 757's documented high thrust-to-weight ratio and hot-and-high capability. Treat this table as illustrative of expected shape (higher ROC at low altitude, tapering with altitude) rather than a precise reference. Weight strongly affects all of this and is unknown from ADS-B.",
+    "table": [
+      { "density_altitude_ft": 0,     "roc_fpm": 2900, "kias": 250 },
+      { "density_altitude_ft": 5000,  "roc_fpm": 2700, "kias": 280 },
+      { "density_altitude_ft": 10000, "roc_fpm": 2500, "kias": 320 },
+      { "density_altitude_ft": 15000, "roc_fpm": 2100, "kias": 325 },
+      { "density_altitude_ft": 20000, "roc_fpm": 1750, "kias": 325 },
+      { "density_altitude_ft": 24000, "roc_fpm": 1500, "kias": 320 },
+      { "density_altitude_ft": 30000, "roc_fpm": 1100, "kias": 300 },
+      { "density_altitude_ft": 35000, "roc_fpm": 650,  "kias": 280 },
+      { "density_altitude_ft": 39000, "roc_fpm": 300,  "kias": 265 }
+    ]
+  },
+
+  "cruise": {
+    "reference_condition": "Typical cruise, ISA",
+    "speed_type": "mach",
+    "notes": "Cruise Mach 0.80 is consistently reported across independent sources for the 757-200. Mmo is 0.86, giving the 757 an unusually large margin between typical cruise and Mmo compared to most narrowbodies.",
+    "table": [
+      { "density_altitude_ft": 28000, "mach": 0.78 },
+      { "density_altitude_ft": 31000, "mach": 0.79 },
+      { "density_altitude_ft": 33000, "mach": 0.80 },
+      { "density_altitude_ft": 35000, "mach": 0.80 },
+      { "density_altitude_ft": 37000, "mach": 0.80 },
+      { "density_altitude_ft": 39000, "mach": 0.80 }
+    ]
+  },
+
+  "descent": {
+    "reference_condition": "Typical idle-thrust descent, Mach 0.80 / ~320 KIAS / 250 KIAS below FL100",
+    "notes": "No 757-specific published descent table found. Figure follows the same ~3nm-per-1000ft planning rule used industry-wide for this aircraft class.",
+    "typical_rod_fpm": -2000,
+    "typical_kias": 320,
+    "descent_gradient_nm_per_1000ft": 3.0
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "aircraft": {
+    "type": "Airbus A321-200",
+    "icao_type": "A321",
+    "category": "transport",
+    "engine": "CFM56-5B / IAE V2500 (variant dependent)",
+    "reference_weight_lbs": null,
+    "source": "Publicly documented typical operating profile — manufacturer published specifications (service ceiling, Mmo, typical cruise Mach) plus standard airline operating procedure (250 KIAS below 10,000 ft per 14 CFR 91.117, typical climb speed schedule).",
+    "source_confidence": "TYPICAL PROFILE, NOT CERTIFIED PERFORMANCE DATA. Airbus AFM/FCOM climb and cruise performance tables are proprietary and not publicly available. This file describes what a normally-operated A321 is expected to do, which is a meaningful benchmark for 'did this flight fly a standard profile?' — but it is NOT a POH comparison and should not be labeled as one.",
+    "verified": false
+  },
+
+  "limits": {
+    "service_ceiling_ft": 39800,
+    "mmo": 0.82,
+    "vmo_kias": 350,
+    "typical_initial_cruise_ft": 31000,
+    "typical_max_cruise_ft": 39000
+  },
+
+  "climb": {
+    "reference_condition": "Typical airline climb profile at moderate takeoff weight, ISA conditions. Speed schedule: 250 KIAS below FL100, ~300 KIAS climb, transitioning to M0.78 at crossover altitude.",
+    "lookup_key": "density_altitude_ft",
+    "notes": "Rates of climb for transport aircraft vary enormously with takeoff weight, which ADS-B cannot observe. A heavy A321 departing on a long sector may climb at half these rates. Treat wide deviations as expected, not as anomalies, unless weight is known.",
+    "table": [
+      { "density_altitude_ft": 0,     "roc_fpm": 2500, "kias": 250 },
+      { "density_altitude_ft": 5000,  "roc_fpm": 2300, "kias": 250 },
+      { "density_altitude_ft": 10000, "roc_fpm": 2200, "kias": 290 },
+      { "density_altitude_ft": 15000, "roc_fpm": 1900, "kias": 300 },
+      { "density_altitude_ft": 20000, "roc_fpm": 1600, "kias": 300 },
+      { "density_altitude_ft": 25000, "roc_fpm": 1300, "kias": 300 },
+      { "density_altitude_ft": 30000, "roc_fpm": 1000, "kias": 290 },
+      { "density_altitude_ft": 35000, "roc_fpm": 600,  "kias": 275 },
+      { "density_altitude_ft": 39000, "roc_fpm": 300,  "kias": 265 }
+    ]
+  },
+
+  "cruise": {
+    "reference_condition": "Long range / typical economy cruise, ISA",
+    "speed_type": "mach",
+    "notes": "Typical operating Mach for the A321 is around 0.78, with 0.80 used when schedule recovery matters. Mmo is 0.82. Cruise Mach observed materially above 0.80 is worth a second look; below 0.76 suggests cost-index or ATC speed control.",
+    "table": [
+      { "density_altitude_ft": 28000, "mach": 0.76 },
+      { "density_altitude_ft": 31000, "mach": 0.78 },
+      { "density_altitude_ft": 33000, "mach": 0.78 },
+      { "density_altitude_ft": 35000, "mach": 0.78 },
+      { "density_altitude_ft": 37000, "mach": 0.79 },
+      { "density_altitude_ft": 39000, "mach": 0.79 }
+    ]
+  },
+
+  "descent": {
+    "reference_condition": "Typical idle-thrust descent, M0.78 / 300 KIAS / 250 KIAS below FL100",
+    "notes": "Typical airline descent planning uses roughly 3 nm per 1000 ft of altitude to lose, giving a nominal descent rate near -1800 to -2200 fpm at cruise speed.",
+    "typical_rod_fpm": -2000,
+    "typical_kias": 300,
+    "descent_gradient_nm_per_1000ft": 3.0
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "aircraft": {
+    "type": "Boeing 767-300",
+    "icao_type": "B763",
+    "category": "transport",
+    "engine": "Pratt & Whitney PW4000, GE CF6-80, or Rolls-Royce RB211-524 series",
+    "reference_weight_lbs": null,
+    "source": "Maximum operating altitude (43,100 ft) confirmed directly from an FAA Type Certificate Data Sheet (TCDS AV-0301) — a primary regulatory document, the strongest sourcing in this file set. Mmo (0.86) corroborated across two independent sources. No published climb/descent table was found for this type; the table here is extrapolated from typical widebody twin performance.",
+    "source_confidence": "LIMITS ARE HIGH CONFIDENCE (primary FAA document for ceiling). CLIMB/DESCENT TABLE IS AN EXTRAPOLATION, not sourced from a 767-specific published profile — treat with the same skepticism as the B752 table.",
+    "verified": false
+  },
+
+  "limits": {
+    "service_ceiling_ft": 43100,
+    "mmo": 0.86,
+    "vmo_kias": 360,
+    "typical_initial_cruise_ft": 31000,
+    "typical_max_cruise_ft": 39000
+  },
+
+  "climb": {
+    "reference_condition": "Typical airline climb profile, moderate weight, ISA. Speed schedule: 250 KIAS below FL100, ~310-320 KIAS climb.",
+    "lookup_key": "density_altitude_ft",
+    "notes": "EXTRAPOLATED — no 767-specific published climb table found. Widebody twins of this class typically show somewhat lower ROC than narrowbodies at a given density altitude due to higher typical operating weights; this table reflects that general pattern rather than a 767-specific certified figure.",
+    "table": [
+      { "density_altitude_ft": 0,     "roc_fpm": 2200, "kias": 250 },
+      { "density_altitude_ft": 5000,  "roc_fpm": 2000, "kias": 290 },
+      { "density_altitude_ft": 10000, "roc_fpm": 1850, "kias": 310 },
+      { "density_altitude_ft": 15000, "roc_fpm": 1550, "kias": 315 },
+      { "density_altitude_ft": 20000, "roc_fpm": 1250, "kias": 315 },
+      { "density_altitude_ft": 24000, "roc_fpm": 1050, "kias": 305 },
+      { "density_altitude_ft": 30000, "roc_fpm": 750,  "kias": 290 },
+      { "density_altitude_ft": 35000, "roc_fpm": 450,  "kias": 275 },
+      { "density_altitude_ft": 39000, "roc_fpm": 220,  "kias": 260 }
+    ]
+  },
+
+  "cruise": {
+    "reference_condition": "Long range cruise, ISA",
+    "speed_type": "mach",
+    "notes": "Max range speed reported at Mach 0.81; economic/typical cruise commonly cited near Mach 0.80. Mmo of 0.86 gives a comfortable margin above typical cruise.",
+    "table": [
+      { "density_altitude_ft": 28000, "mach": 0.78 },
+      { "density_altitude_ft": 31000, "mach": 0.80 },
+      { "density_altitude_ft": 33000, "mach": 0.80 },
+      { "density_altitude_ft": 35000, "mach": 0.80 },
+      { "density_altitude_ft": 37000, "mach": 0.81 },
+      { "density_altitude_ft": 39000, "mach": 0.81 }
+    ]
+  },
+
+  "descent": {
+    "reference_condition": "Typical idle-thrust descent, Mach 0.80 / ~310 KIAS / 250 KIAS below FL100",
+    "notes": "No 767-specific published descent table found. Follows the standard ~3nm-per-1000ft industry planning rule.",
+    "typical_rod_fpm": -1900,
+    "typical_kias": 310,
+    "descent_gradient_nm_per_1000ft": 3.0
+  }
+}

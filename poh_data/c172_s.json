@@ -1,0 +1,59 @@
+{
+  "aircraft": {
+    "type": "Cessna 172S Skyhawk",
+    "icao_type": "C172",
+    "category": "general_aviation",
+    "engine": "Lycoming IO-360-L2A, 180 hp",
+    "reference_weight_lbs": 2550,
+    "source": "Cessna 172S Pilot's Operating Handbook, Section 5 (Performance)",
+    "source_confidence": "APPROXIMATE - transcribed from memory of published POH figures. VERIFY every number against your own POH PDF before presenting this analysis as authoritative. Figures vary by POH revision and by serial number range.",
+    "verified": false
+  },
+
+  "limits": {
+    "service_ceiling_ft": 14000,
+    "vne_kias": 163,
+    "vno_kias": 129,
+    "va_kias_at_gross": 105,
+    "vfe_kias": 110,
+    "vs0_kias": 40,
+    "vs1_kias": 48,
+    "mmo": null
+  },
+
+  "climb": {
+    "reference_condition": "Maximum rate of climb, 2550 lb gross weight, full throttle, mixture leaned above 3000 ft, flaps up",
+    "lookup_key": "density_altitude_ft",
+    "notes": "POH tables are indexed by pressure altitude with separate temperature columns. This file collapses that to a single density-altitude axis, which is a standard simplification but not identical to the POH's own interpolation. Expect a few percent of disagreement versus a careful two-axis POH lookup.",
+    "table": [
+      { "density_altitude_ft": 0,     "roc_fpm": 730, "kias": 74 },
+      { "density_altitude_ft": 2000,  "roc_fpm": 645, "kias": 73 },
+      { "density_altitude_ft": 4000,  "roc_fpm": 560, "kias": 72 },
+      { "density_altitude_ft": 6000,  "roc_fpm": 475, "kias": 71 },
+      { "density_altitude_ft": 8000,  "roc_fpm": 390, "kias": 70 },
+      { "density_altitude_ft": 10000, "roc_fpm": 305, "kias": 69 },
+      { "density_altitude_ft": 12000, "roc_fpm": 215, "kias": 68 }
+    ]
+  },
+
+  "cruise": {
+    "reference_condition": "2550 lb, standard temperature, recommended lean mixture",
+    "speed_type": "ktas",
+    "notes": "Cruise TAS varies substantially with power setting. These figures approximate ~75% power at low altitude, falling toward best-available power at higher altitudes where the normally aspirated engine can no longer produce 75%.",
+    "table": [
+      { "density_altitude_ft": 2000,  "ktas": 110, "power_pct": 75, "fuel_gph": 8.4 },
+      { "density_altitude_ft": 4000,  "ktas": 112, "power_pct": 75, "fuel_gph": 8.2 },
+      { "density_altitude_ft": 6000,  "ktas": 114, "power_pct": 75, "fuel_gph": 8.0 },
+      { "density_altitude_ft": 8000,  "ktas": 116, "power_pct": 73, "fuel_gph": 7.6 },
+      { "density_altitude_ft": 10000, "ktas": 115, "power_pct": 66, "fuel_gph": 7.0 },
+      { "density_altitude_ft": 12000, "ktas": 113, "power_pct": 59, "fuel_gph": 6.4 }
+    ]
+  },
+
+  "descent": {
+    "reference_condition": "Typical cruise descent, power reduced, flaps up",
+    "notes": "The POH does not publish a descent performance table for this aircraft. These are typical operational values, not certified figures.",
+    "typical_rod_fpm": -500,
+    "typical_kias": 110
+  }
+}
